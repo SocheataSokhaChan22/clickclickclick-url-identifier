@@ -1,0 +1,206 @@
+import streamlit as st
+import machine_learning as ml
+import feature_extraction as fe
+from bs4 import BeautifulSoup
+import requests
+import matplotlib.pyplot as plt
+import pandas as pd
+import json
+import time
+from streamlit_extras.let_it_rain import rain 
+
+# Define the submit_url_to_urlscan function
+def submit_url_to_urlscan(url, visibility='public'):
+    headers = {'API-Key': 'd88e6346-ac33-4375-a6bb-1acbeca77aa1', 'Content-Type': 'application/json'}
+    data = {"url": url, "visibility": visibility}
+    response = requests.post('https://urlscan.io/api/v1/scan/', headers=headers, json=data)
+    time.sleep(10)  # Initial wait before starting to poll
+    max_attempts = 30  # Maximum number of attempts
+    interval_seconds = 2  # Polling interval in seconds
+    if response.status_code == 200:
+        return response.json()
+    else:
+        st.error(f"Failed to submit URL to urlscan.io. Status code: {response.status_code}")
+        st.error(f"Response: {response.text}")
+        return None
+
+def poll_urlscan_result(scan_id):
+    headers = {'API-Key': 'd88e6346-ac33-4375-a6bb-1acbeca77aa1'}
+    url = f'https://urlscan.io/api/v1/result/{scan_id}/'
+    max_attempts = 30  # Maximum number of attempts
+    interval_seconds = 2  # Polling interval in seconds
+    st.caption(':orange[Important] We integrate the APIs of urlscan.io to provide more detailed information about the URL infrastructure in summary results. By clicking the link above, we directly connect you to view information such as screenshot of the URL, domains, IPs, Autonomous System (AS) numbers, hashes, etc.')
+    return None
+
+# Set up Streamlit page configuration and custom CSS
+st.set_page_config(
+    page_title="ClickClickClick URL Identifier",
+    page_icon="logo.png",
+    layout="wide",
+    #initial_sidebar_state="expanded",
+)
+st.markdown("""
+    <style>
+    .main {
+        background-color: #f5f5f5;
+    }
+    .stApp {
+        color: #333;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .stTitle {
+        color: black;
+        font-size: 36px;
+    }
+    .stHeader {
+        color: black;
+    }
+    .stSubheader {
+        color: black;
+    }
+    .stTable  > div > div {
+        background-color: #f5f5f5;
+        border-radius: 50px;
+    }
+    .stButton > button {
+        background-color: #E97451;
+        color: #f5f5f5;
+        font-size: 20px;
+    }
+    .stTextInput > div > div > input {
+        border: 2px solid #E97451;
+    }
+    .stSelectBox > div > div > {
+        border: 2px solid #E97451;
+    }
+    .logo {
+        display: block;
+        margin-left: auto;
+        margin-right: auto;
+        width: 500px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# Create a dataframe to store the recently checked URLs and their statuses
+if 'recently_checked_urls' not in st.session_state:
+    st.session_state.recently_checked_urls = pd.DataFrame(columns=['URL', 'Status'])
+
+# Add a logo/image
+st.image("logo.png", output_format='PNG')
+st.title('ClickClickClick URL Identifier')
+st.write('ClickClickClick URL Identifier helps you detect malicious links in emails, text messages, and other online content.')
+st.subheader('Disclaimer')
+st.write('Our tools are intended to help users identify potential phishing links or legitimate URLs. While we strive for accuracy, results may vary. We are not liable for any damages resulting from tool use. By using our services, you agree to these terms.')
+
+model = ml.rf_model
+
+url = st.text_input('Input the link here')
+visibility = st.selectbox("Select Scan Visibility", ["public", "unlisted", "private"])
+
+def example_safe():
+    rain(
+        emoji="💅",
+        font_size=54,
+        falling_speed=5,
+        animation_length=5,
+    )
+
+def example_phishing():
+    rain(
+        emoji="😏",
+        font_size=54,
+        falling_speed=5,
+        animation_length=5,
+    )
+
+# Check if the URL is valid or not
+if st.button('Check!'):
+    try:
+        response = requests.get(url, verify=False, timeout=4)
+        if response.status_code != 200:
+            st.error("HTTP connection was not successful for the URL: {}".format(url))
+        else:
+            soup = BeautifulSoup(response.content, "html.parser")
+            vector = [fe.create_vector(soup)]
+            result = model.predict(vector)
+            if result[0] == 0:
+                st.success("This website link is safe")
+                example_safe()
+            else:
+                st.warning("Attention! This website link is a potential PHISHING!")
+                example_phishing()
+
+            # Add the URL and its status to the recently checked URLs dataframe
+            status = "SUSPICIOUS" if result[0] == 1 else "LEGITIMATE"
+            st.session_state.recently_checked_urls = pd.concat(
+                [st.session_state.recently_checked_urls,
+                 pd.DataFrame({'URL': [url], 'Status': [status]})]
+            )
+
+            # Submit URL to urlscan.io
+            st.info('Submitting URL to urlscan.io...')
+            urlscan_response = submit_url_to_urlscan(url, visibility)
+            if urlscan_response:
+                scan_id = urlscan_response['uuid']
+                st.success(f'Scan complete. View the result on [URLScan website](https://urlscan.io/result/{scan_id}/)')
+
+                # Poll for URLScan result
+                urlscan_result = poll_urlscan_result(scan_id)
+                if urlscan_result:
+                    # Debugging output to check the structure of urlscan_result
+                    st.json(urlscan_result)
+
+                    # Safely access nested keys using .get() method
+                    requests_data = urlscan_result.get('data', {}).get('requests', [])
+                    if requests_data and len(requests_data) > 0:
+                        domain = requests_data[0].get('request', {}).get('url', 'Unavailable')
+                    else:
+                        domain = 'Unavailable'
+
+                    st.session_state.recently_checked_urls.loc[st.session_state.recently_checked_urls['URL'] == url, 'URLScan Result'] = domain
+            else:
+                st.error("Error in submitting URL to urlscan.io")
+    except requests.exceptions.RequestException as e:
+        st.error("Error: {}".format(e))
+
+# Define a function to apply color based on status
+def apply_color(status):
+    if status == 'SUSPICIOUS':
+        return 'color: red'
+    elif status == 'LEGITIMATE':
+        return 'color: green'
+    else:
+        return ''
+
+# Display the recently checked URLs and their statuses with colored text
+st.subheader("Recently Checked URLs:")
+recently_checked_table = st.session_state.recently_checked_urls.reset_index(drop=True)
+st.table(recently_checked_table.style.applymap(lambda x: apply_color(x), subset=['Status']))
+
+st.header("About ClickClickClick URL Identifier")
+st.write('ClickClickClick URL Identifier is a tool developed by 3 junior students of the MIS department at Paragon International University.') 
+st.write('Project Members:')
+st.write('- Morita Chhea')
+st.write('- Socheata Sokhachan')
+st.write('- Sophy Do')        
+st.write('ClickClickClick URL Identifier detects phishing and malicious websites using a machine-learning algorithm. The tool uses high-quality datasets containing phishing URLs and trains them into a model that can differentiate between legitimate and malicious ones.')
+st.write('While "https://www.clickclickclick.tech/" is an online campaign that aims to raise awareness and educate people online on how to aware of phishing link, how it works and how to protect themself.')
+st.write('This online campaign runs by Rosa Rin, a senior student from Department of Media and Communication at RUPP and his team.')
+
+st.subheader('About Data set')
+st.write('We collect data set from:')
+st.write('1. Phishtank.org as a data source for phishing URLs')
+st.write('2. Tranco-list.eu as a data source for legitimate websites')
+st.write('Total of 26,584 websites: **16,060 legitimate** websites | **10,524 phishing** websites')
+
+st.subheader('Machine Learning Model Accuracy Result')
+st.write('We used 4 different ML classifiers from scikit-learn and tested them using k-fold cross validation. We obtained their confusion matrices and calculated their accuracy, precision, and recall scores. The comparison table is below:')
+st.table(ml.df_results)
+st.write('NB = Gaussian Naive Bayes')
+st.write('SVM = Support Vector Machine')
+st.write('DT = Decision Tree')
+st.write('RF = Random Forest')
+
+st.write('As a result, the Random Forest model has the highest accuracy.')
+st.write('ClickClickClick uses the Random Forest Model to detect phishing links.')
